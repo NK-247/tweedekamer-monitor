@@ -1,87 +1,61 @@
-from pathlib import Path
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
-DATA = Path(__file__).resolve().parent / "data"
+DATA = Path(__file__).parent / "data"
 
+st.title("Levensduur en doorlooptijd") 
 
-@st.cache_data
-def laad_data():
-    dossiers = pd.read_csv(DATA / "kamerstukdossier.csv")
-    documenten = pd.read_csv(
-        DATA / "document.csv",
-        parse_dates=["datum", "datum_registratie", "datum_ontvangst"],
-    )
-    return dossiers, documenten
+# Data inlezen
+dossier = pd.read_csv(DATA / "kamerstukdossier.csv")
+documenten = pd.read_csv(DATA / "document.csv", parse_dates=["datum", "datum_registratie", "datum_ontvangst"],) 
 
+# Doorlooptijd per document in dagen
+documenten["doorlooptijd"] = (
+    documenten["datum_ontvangst"] - documenten["datum_registratie"]).dt.days
 
-st.title("Levensduur en doorlooptijd")
-st.caption("Een steekproef van 500 dossiers met al hun documenten.")
-
-dossiers, documenten = laad_data()
-documenten["doorlooptijd_dagen"] = (
-    documenten["datum_ontvangst"] - documenten["datum_registratie"]
-).dt.days
-
-# Filters
+# Filter op vergaderjaar
 jaren = sorted(documenten["vergaderjaar"].dropna().unique())
+jaar = st.sidebar.selectbox("Vergaderjaar", ["Alle"] + jaren)
+if jaar != "Alle": 
+    documenten = documenten[documenten["vergaderjaar"] == jaar] 
+
+# Filter op documenten
 soorten = sorted(documenten["soort"].dropna().unique())
-gekozen_jaren = st.sidebar.multiselect("Vergaderjaar", jaren, default=jaren)
-gekozen_soorten = st.sidebar.multiselect("Soort document", soorten, default=soorten)
-sluit_negatief_uit = st.sidebar.checkbox("Negatieve doorlooptijden uitsluiten", value=True)
-
-df = documenten[
-    documenten["vergaderjaar"].isin(gekozen_jaren)
-    & documenten["soort"].isin(gekozen_soorten)
-]
-if df.empty:
-    st.warning("Geen documenten voor deze selectie.")
-    st.stop()
-
-# Doorlooptijd per document
-dl = df.dropna(subset=["doorlooptijd_dagen"])
-if sluit_negatief_uit:
-    dl = dl[dl["doorlooptijd_dagen"] >= 0]
+soort = st.sidebar.selectbox("Soort document", ["Alle"] + soorten)
+if soort != "Alle": 
+    documenten = documenten[documenten["soort"] == soort]
 
 # Looptijd per dossier: eerste tot laatste documentdatum
-per_dossier = (
-    df.dropna(subset=["datum"])
-    .groupby("kamerstukdossier_id")["datum"]
-    .agg(eerste="min", laatste="max", aantal_documenten="count")
-    .reset_index()
-)
-per_dossier["looptijd_dagen"] = (per_dossier["laatste"] - per_dossier["eerste"]).dt.days
-per_dossier = per_dossier.merge(
-    dossiers, left_on="kamerstukdossier_id", right_on="id", how="left"
-)
+per_dossier = documenten.groupby("kamerstukdossier_id")["datum"].agg(["min", "max"])
+per_dossier["looptijd"] = (per_dossier["max"] - per_dossier["min"]).dt.days
 
-# Kengetallen
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Mediane looptijd dossier", f"{per_dossier['looptijd_dagen'].median():.0f} dagen")
-k2.metric("Gemiddelde looptijd dossier", f"{per_dossier['looptijd_dagen'].mean():.0f} dagen")
-k3.metric("Mediane doorlooptijd", f"{dl['doorlooptijd_dagen'].median():.0f} dagen")
-k4.metric("Binnen 7 dagen", f"{(dl['doorlooptijd_dagen'] <= 7).mean() * 100:.0f}%")
+# kengetallen
+kolom1, kolom2, kolom3 = st.columns(3)
+kolom1.metric("Mediane looptijd dossier", f"{per_dossier['looptijd'].median():.0f} dagen")
+kolom2.metric("Mediane doorlooptijd document", f"{documenten['doorlooptijd'].median():.0f} dagen")
+doorlooptijden = documenten["doorlooptijd"].dropna()
+kolom3.metric("binnen 7 dagen", f"{(doorlooptijden <= 7).mean() * 100:.0f}%")
 
-# Grafieken
-links, rechts = st.columns(2)
+# Dossiers per looptijdcategorie
+st.subheader("Dossiers per looptijdcategorie") 
+categorie = pd.cut(
+    per_dossier["looptijd"], 
+    bins=[-1, 30, 182, 365, 1826, 100000], 
+    labels=["1. < 1 mnd", "2. 1-6 mnd", "3. 6-12 mnd", "4. 1-5 jaar", "5. > 5 jaar"],)
+st.bar_chart(categorie.value_counts().sort_index())
 
-with links:
-    st.subheader("Dossiers per looptijdcategorie")
-    labels = ["1. minder dan 1 mnd", "2. 1-6 mnd", "3. 6-12 mnd", "4. 1-5 jaar", "5. meer dan 5 jaar"]
-    grenzen = [-1, 30, 182, 365, 1826, float("inf")]
-    categorie = pd.cut(per_dossier["looptijd_dagen"], bins=grenzen, labels=labels)
-    telling = categorie.value_counts().reindex(labels).fillna(0).astype(int)
-    st.bar_chart(pd.DataFrame({"aantal dossiers": telling.values}, index=labels))
 
-with rechts:
-    st.subheader("Mediane doorlooptijd per soort document")
-    st.bar_chart(dl.groupby("soort")["doorlooptijd_dagen"].median())
+# Grafiek: doorlooptijd per soort document
+st.subheader("Mediane doorlooptijd per soort document")
+st.bar_chart(documenten.groupby("soort")["doorlooptijd"].median())
 
+# mediane doorlooptijd per jaar
 st.subheader("Mediane doorlooptijd per jaar")
-st.line_chart(dl.groupby(dl["datum_registratie"].dt.year)["doorlooptijd_dagen"].median())
+st.line_chart(documenten.groupby(documenten["datum_registratie"].dt.year)["doorlooptijd"].median())
 
+# tabel: langstlopende dossiers
 st.subheader("Langstlopende dossiers")
-langste = per_dossier.nlargest(10, "looptijd_dagen")[
-    ["nummer", "titel", "aantal_documenten", "looptijd_dagen"]
-]
-st.dataframe(langste, hide_index=True)
+langste = per_dossier.sort_values("looptijd", ascending=False).head(10)
+langste = langste.merge(dossier, left_index=True, right_on="id")
+st.dataframe(langste[["nummer", "titel", "looptijd"]]) 
