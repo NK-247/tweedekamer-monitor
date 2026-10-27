@@ -1,9 +1,5 @@
 {{
     config(
-        unique_key=['activiteit_id', 'vervangen_vanuit_id'],
-        incremental_strategy='merge_with_deletes',
-        deletion_relation='none',
-        on_schema_change='fail',
         contract={'enforced': true}
     )
 }}

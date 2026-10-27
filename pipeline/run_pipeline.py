@@ -53,19 +53,11 @@ def run_transform() -> None:
         str(TRANSFORM_DIR),
     ]
 
-    result = subprocess.run(dbt_command, env=environment)
-    if result.returncode == 0:
-        return
-
-    print("Incremental dbt build failed; rebuilding the generated silver schema from bronze.")
+    # Silver models are fully rebuilt as tables every run. 
     with duckdb.connect(str(DUCKDB_PATH)) as connection:
         connection.execute("DROP SCHEMA IF EXISTS silver CASCADE")
 
-    subprocess.run(
-        [*dbt_command, "--full-refresh"],
-        check=True,
-        env=environment,
-    )
+    subprocess.run(dbt_command, check=True, env=environment)
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

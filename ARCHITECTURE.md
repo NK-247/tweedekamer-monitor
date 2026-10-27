@@ -41,7 +41,7 @@ flowchart LR
         B --> S --> G
     end
 
-    PAR["📦 Parquet assets"]
+    PAR["📦 Parquet Assets"]
     SC["Streamlit Community Cloud\n📊 Dashboard"]
     USER["🙍 General Public"]
     ANALYST["👩‍💻 Data Scientist"]

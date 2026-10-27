@@ -11,7 +11,7 @@ dependencies:
   - pandas
   - pip:
     - dlt[duckdb]
-    - duckdb
+    - duckdb<2  # erpl_odata is not available for DuckDB 2.x yet
     - dbt-duckdb
     - nbstripout
     - requests

@@ -1,9 +1,5 @@
 {{
     config(
-        unique_key='id',
-        incremental_strategy='merge_with_deletes',
-        deletion_relation='bronze.kamerstukdossier',
-        on_schema_change='fail',
         contract={'enforced': true}
     )
 }}

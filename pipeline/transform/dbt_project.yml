@@ -14,7 +14,7 @@ clean-targets:
 models:
   tweedekamer_transform:
     silver:
-      +materialized: incremental
+      +materialized: table
       +schema: silver
       +persist_docs:
         relation: true

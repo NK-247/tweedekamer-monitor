@@ -52,7 +52,7 @@ conda env update --name tweedekamer_monitor --file environment.yml
 
 3. Configure notebook output cleaning
 
-Removing notebook outputs before staging `.ipynb` files keeps the version control history clean and prevents bloated repositories
+Removing notebook outputs before staging `.ipynb` files keeps the version control history clean and prevents bloated repositories.
 
 The following command installs a local Git filter to handle this automatically. Run this once in each clone, with the Conda environment active:
 
@@ -62,7 +62,7 @@ nbstripout --install --attributes .gitattributes
 
 ## Contributing
 
-All contributions must be done on a seperate branch. Follow these steps for each contribution you make.
+All contributions must be done on a separate branch. Follow these steps for each contribution you make.
 
 1. Create a branch
 
@@ -70,9 +70,6 @@ Update your local `main` from the main project:
 
 ```bash
 git switch main
-```
-
-```bash
 git pull upstream main
 ```
 
@@ -94,59 +91,36 @@ Use a short name that describes your work, for example `fix-notebook-query`.
 
 Make sure all your contributions (feature implementations, bug fixes, etc) are saved into this branch. Stick to one contribution per branch.
 
-3. Update your branch
+3. Commit your work locally
+
+Stage and commit your custom changes:
+
+```bash
+git status
+git add .
+git commit -m "Describe your changes clearly"
+```
+
+4. Update your branch with latest project changes
 
 Before opening a pull request, get the latest changes from the main project:
 
 ```bash
 git switch main
-```
-
-```bash
 git pull upstream main
-```
-
-```bash
 git push origin main
 ```
 
-Return to your work branch:
+Return to your work branch and merge the latest `main` into it:
 
 ```bash
 git switch describe-your-change
+git merge main --no-edit
 ```
 
-Merge the latest `main` into it:
+*Note: If you encounter merge conflicts, resolve them in your code editor, stage the resolved files with `git add .`, and run `git merge --continue`.*
 
-```bash
-git merge main
-```
-
-4. Commit and open a pull request
-
-Check your changes:
-
-```bash
-git status
-```
-
-Stage the files you changed. Replace the example path with the path to your file:
-
-```bash
-git add path/to/changed-file
-```
-
-To simply stage all files, do:
-
-```bash
-git add .
-```
-
-Commit with a short description:
-
-```bash
-git commit -m "Describe the change"
-```
+5. Open a pull request
 
 Push your branch to your fork:
 

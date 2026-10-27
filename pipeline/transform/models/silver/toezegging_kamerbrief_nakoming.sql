@@ -1,4 +1,4 @@
-{{ config(unique_key=['toezegging_id', 'document_id'], incremental_strategy='merge_with_deletes', deletion_relation='none', on_schema_change='fail', contract={'enforced': true}) }}
+{{ config(contract={'enforced': true}) }}
 
 WITH current_toezeggingen AS (
     SELECT id, _dlt_id, feed_updated AS relatie_gewijzigd_op

@@ -71,69 +71,108 @@
         {% endset %}
     {% endif %}
 
-    {% set dependent_query %}
-        SELECT DISTINCT
-            kcu.table_schema,
-            kcu.table_name,
-            kcu.column_name
-        FROM information_schema.table_constraints AS tc
-        JOIN information_schema.key_column_usage AS kcu
-            ON tc.constraint_name = kcu.constraint_name
-           AND tc.table_schema = kcu.table_schema
-        JOIN information_schema.referential_constraints AS rc
-            ON tc.constraint_name = rc.constraint_name
-           AND tc.table_schema = rc.constraint_schema
-        JOIN information_schema.constraint_column_usage AS ccu
-            ON rc.unique_constraint_name = ccu.constraint_name
-           AND rc.unique_constraint_schema = ccu.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY'
-          AND rc.unique_constraint_schema = '{{ target_relation.schema }}'
-          AND ccu.table_name = '{{ target_relation.identifier }}'
-          AND kcu.table_schema = '{{ target_relation.schema }}'
-    {% endset %}
+    {#
+        DuckDB's FK constraint checks are over-eager against a live correlated subquery
+        re-evaluated across several statements/chunks (a documented ART index
+        limitation), so the deleted-keys set is materialized once into a real temp
+        table and every cascade/delete statement below references that table instead.
+    #}
+    {% set deleted_keys_table = '_deleted_keys_' ~ target_relation.identifier %}
+    {% set materialize_deleted_keys = [] %}
+    {% if deletion_relation != 'none' %}
+        {% set materialize_deleted_keys_sql %}
+            CREATE OR REPLACE TEMP TABLE {{ deleted_keys_table }} AS (
+                {{ latest_deleted_sql }}
+            )
+        {% endset %}
+        {% do materialize_deleted_keys.append(materialize_deleted_keys_sql) %}
+    {% endif %}
 
-    {% set dependent_result = run_query(dependent_query) %}
-    {% set dependent_deletes = [] %}
-    {% if execute and dependent_result is not none %}
-        {% if target_relation.identifier == 'document' and deletion_relation != 'none' %}
-            {% set document_descendant_deletes %}
-                UPDATE {{ target_relation }}
-                SET huidige_document_versie_id = NULL
-                WHERE id IN (
-                    SELECT id FROM ({{ latest_deleted_sql }}) AS DBT_DELETED_DOCUMENTS
-                );
-                DELETE FROM {{ target_relation.schema }}.document_publicatie
-                WHERE document_versie_id IN (
-                    SELECT id
-                    FROM {{ target_relation.schema }}.document_versie
-                    WHERE document_id IN (
-                        SELECT id FROM ({{ latest_deleted_sql }}) AS DBT_DELETED_DOCUMENTS
-                    )
-                );
-                DELETE FROM {{ target_relation.schema }}.document_publicatie_metadata
-                WHERE document_versie_id IN (
-                    SELECT id
-                    FROM {{ target_relation.schema }}.document_versie
-                    WHERE document_id IN (
-                        SELECT id FROM ({{ latest_deleted_sql }}) AS DBT_DELETED_DOCUMENTS
-                    )
-                );
-            {% endset %}
-            {% do dependent_deletes.append(document_descendant_deletes) %}
-        {% endif %}
-        {% for row in dependent_result.rows %}
-            {% set child_schema = row[0] %}
-            {% set child_table = row[1] %}
-            {% set child_column = row[2] %}
-            {% set delete_statement %}
-                DELETE FROM "{{ child_schema }}"."{{ child_table }}"
-                WHERE "{{ child_column }}" IN (
-                    SELECT {{ deletion_key }}
-                    FROM ({{ latest_deleted_sql }}) AS DBT_DELETED_KEYS
-                )
-            {% endset %}
-            {% do dependent_deletes.append(delete_statement) %}
+    {#
+        Cascade deletes are resolved by walking the physical foreign-key graph of the
+        schema at compile time (BFS from this model's table) instead of hardcoding
+        table names. A back-edge (a descendant pointing back at this table, e.g.
+        document.huidige_document_versie_id -> document_versie.id) is nulled out
+        before its target is deleted, rather than treated as a further cascade.
+    #}
+    {% set prep_statements = [] %}
+    {% set cascade_deletes = [] %}
+    {% if execute and deletion_relation != 'none' %}
+        {% set edges_query %}
+            SELECT
+                kcu.table_name AS child_table,
+                kcu.column_name AS child_column,
+                ccu.table_name AS parent_table,
+                ccu.column_name AS parent_column
+            FROM information_schema.table_constraints AS tc
+            JOIN information_schema.key_column_usage AS kcu
+                ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.referential_constraints AS rc
+                ON tc.constraint_name = rc.constraint_name AND tc.table_schema = rc.constraint_schema
+            JOIN information_schema.constraint_column_usage AS ccu
+                ON rc.unique_constraint_name = ccu.constraint_name AND rc.unique_constraint_schema = ccu.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_schema = '{{ target_relation.schema }}'
+        {% endset %}
+        {% set edges_result = run_query(edges_query) %}
+        {% set edges = [] %}
+        {% for row in edges_result.rows %}
+            {% do edges.append({'child_table': row[0], 'child_column': row[1], 'parent_table': row[2], 'parent_column': row[3]}) %}
         {% endfor %}
+
+        {% set root_table = target_relation.identifier %}
+        {% set membership = {root_table: '"' ~ deletion_key ~ '" IN (SELECT "' ~ deletion_key ~ '" FROM ' ~ deleted_keys_table ~ ')'} %}
+        {% set depth_of = {root_table: 0} %}
+        {% set deletes_by_depth = {} %}
+
+        {% for _ in range(10) %}
+            {% for edge in edges %}
+                {% if edge.parent_table in membership %}
+                    {% set parent_filter = membership[edge.parent_table] %}
+                    {% if edge.child_table == root_table and edge.parent_table != root_table %}
+                        {% set null_statement %}
+                            UPDATE {{ target_relation }}
+                            SET {{ adapter.quote(edge.child_column) }} = NULL
+                            WHERE "{{ edge.child_column }}" IN (
+                                SELECT "{{ edge.parent_column }}"
+                                FROM "{{ target_relation.schema }}"."{{ edge.parent_table }}"
+                                WHERE {{ parent_filter }}
+                            )
+                        {% endset %}
+                        {% if null_statement not in prep_statements %}
+                            {% do prep_statements.append(null_statement) %}
+                        {% endif %}
+                    {% else %}
+                        {% set child_filter = '"' ~ edge.child_column ~ '" IN (SELECT "' ~ edge.parent_column ~ '" FROM "' ~ target_relation.schema ~ '"."' ~ edge.parent_table ~ '" WHERE ' ~ parent_filter ~ ')' %}
+                        {% set delete_statement %}
+                            DELETE FROM "{{ target_relation.schema }}"."{{ edge.child_table }}"
+                            WHERE {{ child_filter }}
+                        {% endset %}
+                        {% set child_depth = depth_of[edge.parent_table] + 1 %}
+                        {% do deletes_by_depth.setdefault(child_depth, []) %}
+                        {% if delete_statement not in deletes_by_depth[child_depth] %}
+                            {% do deletes_by_depth[child_depth].append(delete_statement) %}
+                        {% endif %}
+                        {% if edge.child_table not in membership %}
+                            {% do membership.update({edge.child_table: child_filter}) %}
+                            {% do depth_of.update({edge.child_table: child_depth}) %}
+                        {% endif %}
+                    {% endif %}
+                {% endif %}
+            {% endfor %}
+        {% endfor %}
+
+        {#
+            DuckDB's foreign-key check for a DELETE does not see other DELETEs from
+            earlier in the same open transaction, so each depth of the cascade (deepest
+            descendants first) must be committed before the next, shallower depth runs.
+        #}
+        {% set cascade_deletes = [] %}
+        {% for depth in deletes_by_depth.keys() | sort(reverse=True) %}
+            {% do cascade_deletes.append(deletes_by_depth[depth] | join(';\n')) %}
+        {% endfor %}
+        {% set cascade_deletes = cascade_deletes | join(';\nCOMMIT;\nBEGIN;\n') %}
+        {% set cascade_deletes = [cascade_deletes] if cascade_deletes else [] %}
     {% endif %}
 
     {% if deletion_relation == 'none' %}
@@ -146,7 +185,7 @@
             DELETE FROM {{ target_relation }} AS DBT_TARGET
             WHERE {% for key in unique_keys %}{{ adapter.quote(key) }} IN (
                 SELECT {{ deletion_key }}
-                FROM ({{ latest_deleted_sql }}) AS DBT_DELETED_KEYS
+                FROM {{ deleted_keys_table }}
             ){% if not loop.last %} OR {% endif %}{% endfor %}
         {% endset %}
     {% endif %}
@@ -162,5 +201,27 @@
         )
     {% endset %}
 
-    {{ return((dependent_deletes | join(';\n')) ~ (';\n' if dependent_deletes else '') ~ delete_sql ~ ';\n' ~ (update_statements | join(';\n')) ~ ';\n' ~ insert_sql) }}
+    {% set statement_groups = [] %}
+    {% if materialize_deleted_keys %}
+        {% do statement_groups.append(materialize_deleted_keys | join(';\n')) %}
+    {% endif %}
+    {% if prep_statements %}
+        {% do statement_groups.append(prep_statements | join(';\n')) %}
+    {% endif %}
+    {% if cascade_deletes %}
+        {% do statement_groups.append(cascade_deletes | join(';\n')) %}
+    {% endif %}
+    {#
+        DuckDB's foreign-key check for the parent DELETE below does not see the cascade
+        deletes above unless they are committed first, so force a commit boundary
+        between cleanup and the actual merge.
+    #}
+    {% if prep_statements or cascade_deletes %}
+        {% do statement_groups.append('COMMIT;\nBEGIN') %}
+    {% endif %}
+    {% do statement_groups.append(delete_sql) %}
+    {% do statement_groups.append(update_statements | join(';\n')) %}
+    {% do statement_groups.append(insert_sql) %}
+
+    {{ return(statement_groups | join(';\n')) }}
 {% endmacro %}

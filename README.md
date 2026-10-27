@@ -60,7 +60,7 @@ streamlit run app/app.py
 - `pipeline/transform/` contains the dbt project, silver and gold models, and macros.
 - `app/` contains the dashboard.
 - `eda/` contains the exploratory Jupyter notebooks.
-- `utils/` contains helper SQL scripts.
+- `utils/` contains helper scripts.
 
 For the data architecture and layer descriptions, see [ARCHITECTURE.md](ARCHITECTURE.md). For contribution steps, see [CONTRIBUTING.md](CONTRIBUTING.md). 
 
