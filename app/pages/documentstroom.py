@@ -5,7 +5,7 @@ import plotly.express as px
 from pathlib import Path
 
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).resolve().parent.parent / "wetgeving_documentstroom" / "data"
 
 st.title("Levensduur en doorlooptijd.") 
 BLAUW = "#1F4E79"
