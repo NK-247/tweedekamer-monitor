@@ -1,4 +1,4 @@
-   SELECT id, titel, nummer, toevoeging, kamer
-   FROM silver.kamerstukdossier
-   ORDER BY hash(id)
-   LIMIT 500;
+SELECT id, titel, nummer, toevoeging, kamer
+FROM silver.kamerstukdossier
+ORDER BY hash(id)
+LIMIT 500;
